@@ -1,0 +1,133 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: github-trends-airflow:latest
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db:5432/${AIRFLOW_DB_NAME:-airflow}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?set AIRFLOW_SECRET_KEY in .env}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Pipeline configuration
+    GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN in .env}
+    GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+    GITHUB_LANGUAGES: ${GITHUB_LANGUAGES:-Python,JavaScript,TypeScript,Rust,Go,Java,C++,C#}
+    REPOS_PER_LANGUAGE: ${REPOS_PER_LANGUAGE:-25}
+    MIN_STARS: ${MIN_STARS:-1000}
+    MAX_PAGES_PER_ENDPOINT: ${MAX_PAGES_PER_ENDPOINT:-5}
+    REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-30}
+    MAX_RETRIES: ${MAX_RETRIES:-5}
+    MAX_RATE_LIMIT_WAIT: ${MAX_RATE_LIMIT_WAIT:-3900}
+    MIN_RATE_LIMIT_REMAINING: ${MIN_RATE_LIMIT_REMAINING:-300}
+    # Warehouse (used by scripts and dbt profiles.yml)
+    WAREHOUSE_HOST: warehouse-db
+    WAREHOUSE_PORT: "5432"
+    WAREHOUSE_DB: ${WAREHOUSE_DB:-github_trends}
+    WAREHOUSE_USER: ${WAREHOUSE_USER:-warehouse}
+    WAREHOUSE_PASSWORD: ${WAREHOUSE_PASSWORD:?set WAREHOUSE_PASSWORD in .env}
+    DBT_TARGET: ${DBT_TARGET:-dev}
+    DBT_THREADS: ${DBT_THREADS:-4}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./scripts:/opt/airflow/scripts
+    - ./dbt:/opt/airflow/dbt
+    - ./logs:/opt/airflow/logs
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+    warehouse-db:
+      condition: service_healthy
+
+services:
+  # ---- Analytics warehouse: raw -> staging -> marts ----
+  warehouse-db:
+    image: postgres:15
+    container_name: gh-warehouse-db
+    environment:
+      POSTGRES_USER: ${WAREHOUSE_USER:-warehouse}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD:?set WAREHOUSE_PASSWORD in .env}
+      POSTGRES_DB: ${WAREHOUSE_DB:-github_trends}
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${WAREHOUSE_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---- Airflow metadata database ----
+  airflow-db:
+    image: postgres:15
+    container_name: gh-airflow-db
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: gh-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER:-admin}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}" \
+          --firstname Admin --lastname User --role Admin --email admin@example.com || true
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: gh-airflow-webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: gh-airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  warehouse-data:
+  airflow-db-data:

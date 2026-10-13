@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: stg_repos
+    description: One row per tracked repository, typed and cleaned.
+    columns:
+      - name: repo_id
+        tests: [not_null, unique]
+      - name: full_name
+        tests: [not_null, unique]
+      - name: owner_type
+        tests:
+          - accepted_values:
+              values: ['Organization', 'User']
+      - name: language
+        tests: [not_null]
+      - name: stars
+        tests: [not_null]
+
+  - name: stg_events
+    description: One row per GitHub event (commit, star, issue or PR action).
+    columns:
+      - name: event_id
+        tests: [not_null, unique]
+      - name: repo_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_repos')
+              field: repo_id
+      - name: event_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['commit', 'star', 'issue_opened', 'issue_closed',
+                       'pr_opened', 'pr_closed', 'pr_merged']
+      - name: actor_login
+        tests: [not_null]
+      - name: event_ts
+        tests: [not_null]

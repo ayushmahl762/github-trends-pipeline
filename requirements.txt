@@ -1,0 +1,7 @@
+# Installed into the Airflow image with the official constraints file (see Dockerfile).
+apache-airflow==2.10.5
+apache-airflow-providers-postgres
+requests>=2.31
+pydantic>=2.5
+psycopg2-binary>=2.9
+pandas>=2.0

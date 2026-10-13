@@ -1,0 +1,61 @@
+version: 2
+
+models:
+  - name: dim_languages
+    description: One row per programming language across tracked repositories.
+    columns:
+      - name: language_key
+        tests: [not_null, unique]
+      - name: language_name
+        tests: [not_null, unique]
+      - name: repo_count
+        tests: [not_null]
+
+  - name: dim_repositories
+    description: One row per tracked repository (latest snapshot).
+    columns:
+      - name: repo_id
+        tests: [not_null, unique]
+      - name: full_name
+        tests: [not_null, unique]
+      - name: language_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_languages')
+              field: language_key
+      - name: stars
+        tests: [not_null]
+
+  - name: fact_repo_activity
+    description: Daily activity per repository (commits, stars, issues, pull requests).
+    columns:
+      - name: activity_key
+        tests: [not_null, unique]
+      - name: repo_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_repositories')
+              field: repo_id
+      - name: language_key
+        tests:
+          - relationships:
+              to: ref('dim_languages')
+              field: language_key
+      - name: activity_date
+        tests: [not_null]
+
+  - name: fact_contributor_activity
+    description: Daily contributions per contributor and repository (bots excluded).
+    columns:
+      - name: contribution_key
+        tests: [not_null, unique]
+      - name: actor_login
+        tests: [not_null]
+      - name: repo_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_repositories')
+              field: repo_id
